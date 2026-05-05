@@ -273,7 +273,7 @@ class CatalogMesh(BaseClass):
     def __init__(self, data_positions, data_weights=None, randoms_positions=None, randoms_weights=None,
                  shifted_positions=None, shifted_weights=None,
                  nmesh=None, boxsize=None, boxcenter=None, cellsize=None, boxpad=2., wrap=False, dtype='f8',
-                 resampler='tsc', interlacing=2, position_type='xyz', copy=False, mpiroot=None, mpicomm=mpi.COMM_WORLD):
+                 resampler='tsc', engine='fft', interlacing=2, position_type='xyz', copy=False, mpiroot=None, mpicomm=mpi.COMM_WORLD):
         """
         Initialize :class:`CatalogMesh`.
 
@@ -325,6 +325,10 @@ class CatalogMesh(BaseClass):
         resampler : string, ResampleWindow, default='tsc'
             Resampler used to assign particles to the mesh.
             Choices are ['ngp', 'cic', 'tcs', 'pcs'].
+
+        engine : string, default='fft'
+            engine for Fourier transform.
+            Choices are ['fft', 'nufft']
 
         interlacing : bool, int, default=2
             Whether to use interlacing to reduce aliasing when painting the particles on the mesh.
@@ -523,6 +527,10 @@ class CatalogMesh(BaseClass):
                 weights += [(self.randoms_weights, None)]
 
         pm = ParticleMesh(BoxSize=self.boxsize, Nmesh=self.nmesh, dtype=dtype, comm=self.mpicomm)
+
+        if getattr(self, 'engine', 'fft') == 'nufft':
+            return self._to_mesh_finufft(positions, weights, pm)
+
         offset = self.boxcenter - self.boxsize / 2.
         # offset = self.boxcenter
         # offset = 0.
