@@ -357,6 +357,7 @@ class CatalogMesh(BaseClass):
         self.mpicomm = mpicomm
         self.dtype = np.dtype(dtype)
         self.rdtype = _get_real_dtype(self.dtype)
+        self.engine = str(engine).lower()
         self._set_positions(data_positions=data_positions, randoms_positions=randoms_positions, shifted_positions=shifted_positions, position_type=position_type, copy=copy, mpiroot=mpiroot)
         self._set_weights(data_weights=data_weights, randoms_weights=randoms_weights, shifted_weights=shifted_weights, copy=copy, mpiroot=mpiroot)
         self._set_box(boxsize=boxsize, cellsize=cellsize, nmesh=nmesh, boxcenter=boxcenter, boxpad=boxpad, wrap=wrap)
@@ -371,6 +372,9 @@ class CatalogMesh(BaseClass):
     @property
     def compensation(self):
         """Return dictionary specifying compensation scheme for particle-mesh resampling."""
+        if self.engine == 'nufft':
+            return None
+    
         return {'resampler': _get_resampler_name(self.resampler), 'shotnoise': not bool(self.interlacing)}
 
     def clone(self, data_positions=None, data_weights=None, randoms_positions=None, randoms_weights=None,
@@ -382,7 +386,7 @@ class CatalogMesh(BaseClass):
         """
         new = self.__class__.__new__(self.__class__)
         # If cellsize is provided, do not use nmesh or boxsize value from current instance
-        for name in ['boxsize', 'nmesh'] * ('cellsize' not in kwargs) + ['boxcenter', 'dtype', 'resampler', 'interlacing', 'mpicomm']:
+        for name in ['boxsize', 'nmesh'] * ('cellsize' not in kwargs) + ['boxcenter', 'dtype', 'resampler', 'engine', 'interlacing', 'mpicomm']:
             tmp = kwargs.get(name, None)
             kwargs[name] = tmp if tmp is not None else getattr(self, name)
         new.__init__(data_positions=data_positions, data_weights=data_weights, randoms_positions=randoms_positions, randoms_weights=randoms_weights,
@@ -528,7 +532,7 @@ class CatalogMesh(BaseClass):
 
         pm = ParticleMesh(BoxSize=self.boxsize, Nmesh=self.nmesh, dtype=dtype, comm=self.mpicomm)
 
-        if getattr(self, 'engine', 'fft') == 'nufft':
+        if self.engine == 'nufft':
             return self._to_mesh_finufft(positions, weights, pm)
 
         offset = self.boxcenter - self.boxsize / 2.
@@ -633,6 +637,40 @@ class CatalogMesh(BaseClass):
             self._compensate(out)
             out = out.c2r()
         return out
+    
+    def _to_mesh_finufft(self, positions_list, weights_list, pm, eps=1e-9):
+        import finufft
+        cfield = pm.create(type='complex', value=0.)
+        boxsize = np.asarray(self.boxsize, dtype='f8')
+        boxcenter = np.asarray(self.boxcenter, dtype='f8')
+        nmesh = tuple(int(n) for n in self.nmesh)
+
+        for positions, (weights, scaling) in zip(positions_list, weights_list):
+            # Match pmesh's cell-centered grid: shift by half a cell so that
+            # FINUFFT's coordinate origin coincides with cell (0,0,0)'s center.
+            cellsize = boxsize / np.asarray(nmesh, dtype='f8')
+            x = positions - boxcenter + 0.5 * cellsize
+            x = (x + boxsize / 2.) % boxsize - boxsize / 2.
+            theta = (2.0 * np.pi * x / boxsize).astype('f8')
+
+            if weights is None:
+                c = np.ones(len(theta), dtype='c16')
+            else:
+                c = np.asarray(weights, dtype='c16')
+            if scaling is not None:
+                c = c * scaling
+
+            F = finufft.nufft3d1(
+                theta[:, 0], theta[:, 1], theta[:, 2], c,
+                n_modes=nmesh, eps=eps, isign=-1, modeord=1,
+            )
+            F /= float(np.prod(nmesh))     # match pmesh r2c convention
+            # accumulate into the half-cube (r2c layout)
+            cfield[...] += F[..., : cfield.shape[-1]]
+            del F
+
+        return cfield
+
 
     def _compensate(self, cfield):
         if self.mpicomm.rank == 0:
