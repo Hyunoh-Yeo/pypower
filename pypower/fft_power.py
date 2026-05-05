@@ -1730,7 +1730,7 @@ class MeshFFTBase(BaseClass):
                 for cname in ['data', 'randoms', 'shifted']:
                     self.attrs['{}_size{:d}'.format(cname, i + 1)] = getattr(mesh, '{}_size'.format(cname))
                     self.attrs['sum_{}_weights{:d}'.format(cname, i + 1)] = getattr(mesh, 'sum_{}_weights'.format(cname))
-                self.attrs['resampler{:d}'.format(i + 1)] = mesh.compensation['resampler']
+                self.attrs['resampler{:d}'.format(i + 1)] = mesh.compensation['resampler'] if mesh.compensation is not None else None
                 self.attrs['interlacing{:d}'.format(i + 1)] = mesh.interlacing
             else:
                 setattr(self, name, mesh)

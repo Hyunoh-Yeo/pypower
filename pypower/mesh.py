@@ -639,6 +639,60 @@ class CatalogMesh(BaseClass):
         return out
     
     def _to_mesh_finufft(self, positions_list, weights_list, pm, eps=1e-9):
+        """
+        Paint positions/weights to a Fourier-space mesh using FINUFFT.
+
+        Replaces the standard "paint to real mesh + r2c" path with a single
+        FINUFFT type-1 transform that goes directly from nonuniform particle
+        positions to Fourier coefficients on a uniform grid. Because there is
+        no particle-mesh assignment kernel, no compensation or interlacing is
+        needed.
+
+        Parameters
+        ----------
+        positions_list : list of arrays
+            List of position arrays of shape (N, 3), one per field component
+            being summed (e.g. data alone, or data and randoms for FKP).
+            Same structure as built by :meth:`to_mesh`.
+
+        weights_list : list of (array or None, float or None) tuples
+            For each entry in ``positions_list``, a ``(weights, scaling)``
+            pair. ``weights`` is a per-particle weight array of shape (N,)
+            or ``None`` for unit weights. ``scaling`` is an overall multiplier
+            applied to that component (e.g. ``-alpha`` for the randoms term
+            in the FKP field) or ``None``.
+
+        pm : pmesh.pm.ParticleMesh
+            Target particle-mesh object. Used to construct the output
+            :class:`pmesh.pm.ComplexField` so that downstream
+            :class:`MeshFFTPower` consumers see the same layout as the
+            FFT path.
+
+        eps : float, default=1e-9
+            Requested relative accuracy for FINUFFT. Smaller values give
+            more accurate Fourier coefficients at the cost of runtime.
+
+        Returns
+        -------
+        cfield : pmesh.pm.ComplexField
+            Fourier-space mesh on the half-cube (r2c) layout, normalized to
+            match pmesh's :math:`F(k) = N^{-3} \sum_{r} e^{-i k r} F(r)`
+            convention so that it is a drop-in replacement for the result of
+            ``CatalogMesh.to_mesh().r2c()``.
+
+        Notes
+        -----
+        Particle positions are first wrapped into the centered periodic box
+        ``[-L/2, L/2)``, then shifted by half a cell so that the FINUFFT
+        coordinate origin coincides with the center of pmesh cell ``(0, 0, 0)``.
+        Coordinates are finally rescaled into the ``[-pi, pi)`` domain expected
+        by FINUFFT.
+
+        The current implementation assumes ``mpicomm == MPI.COMM_SELF``: the
+        FINUFFT call returns the full Fourier cube on a single rank, which
+        is then sliced to the half-cube layout. Multi-rank support would
+        require scattering the cube to match pmesh's domain decomposition.
+        """
         import finufft
         cfield = pm.create(type='complex', value=0.)
         boxsize = np.asarray(self.boxsize, dtype='f8')
@@ -649,8 +703,8 @@ class CatalogMesh(BaseClass):
             # Match pmesh's cell-centered grid: shift by half a cell so that
             # FINUFFT's coordinate origin coincides with cell (0,0,0)'s center.
             cellsize = boxsize / np.asarray(nmesh, dtype='f8')
-            x = positions - boxcenter + 0.5 * cellsize
-            x = (x + boxsize / 2.) % boxsize - boxsize / 2.
+            x = positions - boxcenter
+            x = (x + boxsize / 2.0) % boxsize - boxsize / 2.0
             theta = (2.0 * np.pi * x / boxsize).astype('f8')
 
             if weights is None:
